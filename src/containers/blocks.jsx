@@ -8,10 +8,14 @@ import VMScratchBlocks from '../lib/blocks';
 import VM from 'scratch-vm';
 import Prompt from './prompt.jsx';
 import BlocksComponent from '../components/blocks/blocks.jsx';
+import ExtensionLibrary from './extension-library.jsx';
+import CustomProcedures from './custom-procedures.jsx';
 
 import {connect} from 'react-redux';
 import {updateToolbox} from '../reducers/toolbox';
 import {activateColorPicker} from '../reducers/color-picker';
+import {closeExtensionLibrary} from '../reducers/modals';
+import {activateCustomProcedures, deactivateCustomProcedures} from '../reducers/custom-procedures';
 
 const addFunctionListener = (object, property, callback) => {
     const oldFn = object[property];
@@ -29,14 +33,17 @@ class Blocks extends React.Component {
         bindAll(this, [
             'attachVM',
             'detachVM',
+            'handleCategorySelected',
             'handlePromptStart',
             'handlePromptCallback',
             'handlePromptClose',
+            'handleCustomProceduresClose',
             'onScriptGlowOn',
             'onScriptGlowOff',
             'onBlockGlowOn',
             'onBlockGlowOff',
             'handleExtensionAdded',
+            'handleBlocksInfoUpdate',
             'onTargetsUpdate',
             'onVisualReport',
             'onWorkspaceUpdate',
@@ -52,45 +59,51 @@ class Blocks extends React.Component {
     }
     componentDidMount () {
         this.ScratchBlocks.FieldColourSlider.activateEyedropper_ = this.props.onActivateColorPicker;
+        this.ScratchBlocks.Procedures.externalProcedureDefCallback = this.props.onActivateCustomProcedures;
 
-        const workspaceConfig = defaultsDeep({}, Blocks.defaultOptions, this.props.options);
+        const workspaceConfig = defaultsDeep({},
+            Blocks.defaultOptions,
+            this.props.options,
+            {toolbox: this.props.toolboxXML}
+        );
         this.workspace = this.ScratchBlocks.inject(this.blocks, workspaceConfig);
-
-        // Load the toolbox from the GUI (otherwise we get the scratch-blocks default toolbox)
-        this.workspace.updateToolbox(this.props.toolboxXML);
 
         // @todo change this when blockly supports UI events
         addFunctionListener(this.workspace, 'translate', this.onWorkspaceMetricsChange);
         addFunctionListener(this.workspace, 'zoom', this.onWorkspaceMetricsChange);
 
         this.attachVM();
+        this.props.vm.setLocale(this.props.locale, this.props.messages);
     }
     shouldComponentUpdate (nextProps, nextState) {
         return (
             this.state.prompt !== nextState.prompt ||
             this.props.isVisible !== nextProps.isVisible ||
-            this.props.toolboxXML !== nextProps.toolboxXML
+            this.props.toolboxXML !== nextProps.toolboxXML ||
+            this.props.extensionLibraryVisible !== nextProps.extensionLibraryVisible ||
+            this.props.customProceduresVisible !== nextProps.customProceduresVisible ||
+            this.props.locale !== nextProps.locale
         );
     }
     componentDidUpdate (prevProps) {
+        if (prevProps.locale !== this.props.locale) {
+            this.props.vm.setLocale(this.props.locale, this.props.messages);
+        }
+
         if (prevProps.toolboxXML !== this.props.toolboxXML) {
             const selectedCategoryName = this.workspace.toolbox_.getSelectedItem().name_;
             this.workspace.updateToolbox(this.props.toolboxXML);
-            // Blockly throws if we don't select a category after updating the toolbox.
-            /** @TODO Find a way to avoid the exception without accessing private properties. */
-            this.setToolboxSelectedItemByName(selectedCategoryName);
+            this.workspace.toolbox_.setSelectedCategoryByName(selectedCategoryName);
         }
         if (this.props.isVisible === prevProps.isVisible) {
             return;
         }
-
         // @todo hack to resize blockly manually in case resize happened while hidden
         // @todo hack to reload the workspace due to gui bug #413
         if (this.props.isVisible) { // Scripts tab
             this.workspace.setVisible(true);
             this.props.vm.refreshWorkspace();
             window.dispatchEvent(new Event('resize'));
-            this.workspace.toolbox_.refreshSelection();
         } else {
             this.workspace.setVisible(false);
         }
@@ -98,20 +111,6 @@ class Blocks extends React.Component {
     componentWillUnmount () {
         this.detachVM();
         this.workspace.dispose();
-    }
-    /**
-     * Select a particular category in the toolbox by specifying the category name.
-     * This is a workaround for a bug: @see {@link componentDidUpdate} above.
-     * @TODO Remove this or reimplement using only public APIs.
-     * @param {string} name - the name of the category to select.
-     */
-    setToolboxSelectedItemByName (name) {
-        const categories = this.workspace.toolbox_.categoryMenu_.categories_;
-        for (let i = 0; i < categories.length; i++) {
-            if (categories[i].name_ === name) {
-                this.workspace.toolbox_.setSelectedItem(categories[i]);
-            }
-        }
     }
     attachVM () {
         this.workspace.addChangeListener(this.props.vm.blockListener);
@@ -128,6 +127,7 @@ class Blocks extends React.Component {
         this.props.vm.addListener('workspaceUpdate', this.onWorkspaceUpdate);
         this.props.vm.addListener('targetsUpdate', this.onTargetsUpdate);
         this.props.vm.addListener('EXTENSION_ADDED', this.handleExtensionAdded);
+        this.props.vm.addListener('BLOCKSINFO_UPDATE', this.handleBlocksInfoUpdate);
     }
     detachVM () {
         this.props.vm.removeListener('SCRIPT_GLOW_ON', this.onScriptGlowOn);
@@ -138,6 +138,7 @@ class Blocks extends React.Component {
         this.props.vm.removeListener('workspaceUpdate', this.onWorkspaceUpdate);
         this.props.vm.removeListener('targetsUpdate', this.onTargetsUpdate);
         this.props.vm.removeListener('EXTENSION_ADDED', this.handleExtensionAdded);
+        this.props.vm.removeListener('BLOCKSINFO_UPDATE', this.handleBlocksInfoUpdate);
     }
     updateToolboxBlockValue (id, value) {
         const block = this.workspace
@@ -185,17 +186,25 @@ class Blocks extends React.Component {
         this.workspace.reportValue(data.id, data.value);
     }
     onWorkspaceUpdate (data) {
+        // When we change sprites, update the toolbox to have the new sprite's blocks
+        if (this.props.vm.editingTarget) {
+            const target = this.props.vm.editingTarget;
+            const dynamicBlocksXML = this.props.vm.runtime.getBlocksXML();
+            const toolboxXML = makeToolboxXML(target.isStage, target.id, dynamicBlocksXML);
+            this.props.updateToolboxState(toolboxXML);
+        }
+
         if (this.props.vm.editingTarget && !this.state.workspaceMetrics[this.props.vm.editingTarget.id]) {
             this.onWorkspaceMetricsChange();
         }
 
-        this.ScratchBlocks.Events.disable();
-        this.workspace.clear();
-
+        // Remove and reattach the workspace listener (but allow flyout events)
+        this.workspace.removeChangeListener(this.props.vm.blockListener);
         const dom = this.ScratchBlocks.Xml.textToDom(data.xml);
-        this.ScratchBlocks.Xml.domToWorkspace(dom, this.workspace);
-        this.ScratchBlocks.Events.enable();
-        this.workspace.toolbox_.refreshSelection();
+        // @todo This line rerenders toolbox, and the change in the toolbox XML also rerenders the toolbox.
+        // We should only rerender the toolbox once. See https://github.com/LLK/scratch-gui/issues/901
+        this.ScratchBlocks.Xml.clearWorkspaceAndLoadFromXml(dom, this.workspace);
+        this.workspace.addChangeListener(this.props.vm.blockListener);
 
         if (this.props.vm.editingTarget && this.state.workspaceMetrics[this.props.vm.editingTarget.id]) {
             const {scrollX, scrollY, scale} = this.state.workspaceMetrics[this.props.vm.editingTarget.id];
@@ -208,8 +217,16 @@ class Blocks extends React.Component {
     handleExtensionAdded (blocksInfo) {
         this.ScratchBlocks.defineBlocksWithJsonArray(blocksInfo.map(blockInfo => blockInfo.json));
         const dynamicBlocksXML = this.props.vm.runtime.getBlocksXML();
-        const toolboxXML = makeToolboxXML(dynamicBlocksXML);
-        this.props.onExtensionAdded(toolboxXML);
+        const target = this.props.vm.editingTarget;
+        const toolboxXML = makeToolboxXML(target.isStage, target.id, dynamicBlocksXML);
+        this.props.updateToolboxState(toolboxXML);
+    }
+    handleBlocksInfoUpdate (blocksInfo) {
+        // @todo Later we should replace this to avoid all the warnings from redefining blocks.
+        this.handleExtensionAdded(blocksInfo);
+    }
+    handleCategorySelected (categoryName) {
+        this.workspace.toolbox_.setSelectedCategoryByName(categoryName);
     }
     setBlocks (blocks) {
         this.blocks = blocks;
@@ -224,14 +241,23 @@ class Blocks extends React.Component {
     handlePromptClose () {
         this.setState({prompt: null});
     }
+    handleCustomProceduresClose (data) {
+        this.props.onRequestCloseCustomProcedures(data);
+        this.workspace.refreshToolboxSelection_();
+    }
     render () {
         /* eslint-disable no-unused-vars */
         const {
+            customProceduresVisible,
+            extensionLibraryVisible,
             options,
             vm,
             isVisible,
             onActivateColorPicker,
-            onExtensionAdded,
+            updateToolboxState,
+            onActivateCustomProcedures,
+            onRequestCloseExtensionLibrary,
+            onRequestCloseCustomProcedures,
             toolboxXML,
             ...props
         } = this.props;
@@ -251,15 +277,36 @@ class Blocks extends React.Component {
                         onOk={this.handlePromptCallback}
                     />
                 ) : null}
+                {extensionLibraryVisible ? (
+                    <ExtensionLibrary
+                        vm={vm}
+                        onCategorySelected={this.handleCategorySelected}
+                        onRequestClose={onRequestCloseExtensionLibrary}
+                    />
+                ) : null}
+                {customProceduresVisible ? (
+                    <CustomProcedures
+                        options={{
+                            media: options.media
+                        }}
+                        onRequestClose={this.handleCustomProceduresClose}
+                    />
+                ) : null}
             </div>
         );
     }
 }
 
 Blocks.propTypes = {
+    customProceduresVisible: PropTypes.bool,
+    extensionLibraryVisible: PropTypes.bool,
     isVisible: PropTypes.bool,
+    locale: PropTypes.string,
+    messages: PropTypes.objectOf(PropTypes.string),
     onActivateColorPicker: PropTypes.func,
-    onExtensionAdded: PropTypes.func,
+    onActivateCustomProcedures: PropTypes.func,
+    onRequestCloseCustomProcedures: PropTypes.func,
+    onRequestCloseExtensionLibrary: PropTypes.func,
     options: PropTypes.shape({
         media: PropTypes.string,
         zoom: PropTypes.shape({
@@ -282,6 +329,7 @@ Blocks.propTypes = {
         comments: PropTypes.bool
     }),
     toolboxXML: PropTypes.string,
+    updateToolboxState: PropTypes.func,
     vm: PropTypes.instanceOf(VM).isRequired
 };
 
@@ -317,12 +365,23 @@ Blocks.defaultProps = {
 };
 
 const mapStateToProps = state => ({
-    toolboxXML: state.toolbox.toolboxXML
+    extensionLibraryVisible: state.modals.extensionLibrary,
+    locale: state.intl.locale,
+    messages: state.intl.messages,
+    toolboxXML: state.toolbox.toolboxXML,
+    customProceduresVisible: state.customProcedures.active
 });
 
 const mapDispatchToProps = dispatch => ({
     onActivateColorPicker: callback => dispatch(activateColorPicker(callback)),
-    onExtensionAdded: toolboxXML => {
+    onActivateCustomProcedures: (data, callback) => dispatch(activateCustomProcedures(data, callback)),
+    onRequestCloseExtensionLibrary: () => {
+        dispatch(closeExtensionLibrary());
+    },
+    onRequestCloseCustomProcedures: data => {
+        dispatch(deactivateCustomProcedures(data));
+    },
+    updateToolboxState: toolboxXML => {
         dispatch(updateToolbox(toolboxXML));
     }
 });

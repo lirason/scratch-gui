@@ -8,9 +8,9 @@ import VM from 'scratch-vm';
 
 import Blocks from '../../containers/blocks.jsx';
 import CostumeTab from '../../containers/costume-tab.jsx';
-import Controls from '../../containers/controls.jsx';
 import TargetPane from '../../containers/target-pane.jsx';
 import SoundTab from '../../containers/sound-tab.jsx';
+import StageHeader from '../../containers/stage-header.jsx';
 import Stage from '../../containers/stage.jsx';
 import {FormattedMessage} from 'react-intl';
 
@@ -26,7 +26,7 @@ const addExtensionMessage = (
     <FormattedMessage
         defaultMessage="Extensions"
         description="Button to add an extension in the target pane"
-        id="targetPane.addExtension"
+        id="gui.gui.addExtension"
     />
 );
 
@@ -112,7 +112,13 @@ const GUIComponent = props => {
 
                     <Box className={styles.stageAndTargetWrapper}>
                         <Box className={styles.stageMenuWrapper}>
-                            <Controls vm={vm} />
+                            <MediaQuery minWidth={layout.fullSizeMinWidth}>{isFullSize => (
+                                <StageHeader
+                                    height={isFullSize ? layout.fullStageHeight : layout.smallerStageHeight}
+                                    vm={vm}
+                                    width={isFullSize ? layout.fullStageWidth : layout.smallerStageWidth}
+                                />
+                            )}</MediaQuery>
                         </Box>
                         <Box className={styles.stageWrapper}>
                             <MediaQuery minWidth={layout.fullSizeMinWidth}>{isFullSize => (

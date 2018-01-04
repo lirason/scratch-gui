@@ -5,31 +5,53 @@ import classNames from 'classnames';
 import Box from '../box/box.jsx';
 import Loupe from '../loupe/loupe.jsx';
 import MonitorList from '../../containers/monitor-list.jsx';
+import Question from '../../containers/question.jsx';
 import styles from './stage.css';
 
 const StageComponent = props => {
     const {
         canvasRef,
-        width,
         height,
+        isColorPicking,
+        isZoomed,
+        width,
         colorInfo,
         onDeactivateColorPicker,
-        isColorPicking,
+        question,
+        onQuestionAnswered,
         ...boxProps
     } = props;
+
+    let heightCorrectedAspect = height;
+    let widthCorrectedAspect = width;
+    const spacingBorderAdjustment = 9;
+    const stageMenuHeightAdjustment = 40;
+    if (isZoomed) {
+        heightCorrectedAspect = window.innerHeight - stageMenuHeightAdjustment - spacingBorderAdjustment;
+        widthCorrectedAspect = heightCorrectedAspect + (heightCorrectedAspect / 3);
+        if (widthCorrectedAspect > window.innerWidth) {
+            widthCorrectedAspect = window.innerWidth;
+            heightCorrectedAspect = widthCorrectedAspect * .75;
+        }
+    }
     return (
         <div>
             <Box
-                className={classNames(styles.stageWrapper, {
-                    [styles.withColorPicker]: isColorPicking
+                className={classNames({
+                    [styles.stageWrapper]: !isZoomed,
+                    [styles.stageWrapperOverlay]: isZoomed,
+                    [styles.withColorPicker]: !isZoomed && isColorPicking
                 })}
             >
                 <Box
-                    className={styles.stage}
+                    className={classNames(
+                        styles.stage,
+                        {[styles.stageOverlayContent]: isZoomed}
+                    )}
                     componentRef={canvasRef}
                     element="canvas"
-                    height={height}
-                    width={width}
+                    height={heightCorrectedAspect}
+                    width={widthCorrectedAspect}
                     {...boxProps}
                 />
                 <Box className={styles.monitorWrapper}>
@@ -40,6 +62,24 @@ const StageComponent = props => {
                         <Loupe colorInfo={colorInfo} />
                     </Box>
                 ) : null}
+                {question === null ? null : (
+                    <div
+                        className={classNames(
+                            styles.stageOverlayContent,
+                            styles.stageOverlayContentBorderOverride
+                        )}
+                    >
+                        <div
+                            className={styles.questionWrapper}
+                            style={{width: widthCorrectedAspect}}
+                        >
+                            <Question
+                                question={question}
+                                onQuestionAnswered={onQuestionAnswered}
+                            />
+                        </div>
+                    </div>
+                )}
             </Box>
             {isColorPicking ? (
                 <Box
@@ -55,7 +95,10 @@ StageComponent.propTypes = {
     colorInfo: Loupe.propTypes.colorInfo,
     height: PropTypes.number,
     isColorPicking: PropTypes.bool,
+    isZoomed: PropTypes.bool.isRequired,
     onDeactivateColorPicker: PropTypes.func,
+    onQuestionAnswered: PropTypes.func,
+    question: PropTypes.string,
     width: PropTypes.number
 };
 StageComponent.defaultProps = {
